@@ -1285,6 +1285,15 @@ void CodeGen_C::set_name_mangling_mode(NameMangling mode) {
 }
 
 string CodeGen_C::print_type(Type type, AppendSpaceIfNeeded space_option) {
+    if(target.arch==Target::X86 && type.bits() == 32 &&type.lanes()==8)
+    {
+        return "__m256 ";
+    }
+    if(target.arch==Target::ARM && target.bits == 64 && type.bits() == 32 &&type.lanes()==4)
+    {
+        return "float32x4_t ";
+    }
+    
     return type_to_c_type(type, space_option == AppendSpace);
 }
 
@@ -1814,9 +1823,51 @@ void CodeGen_C::visit_binop(Type t, const Expr &a, const Expr &b, const char *op
     string sb = print_expr(b);
     print_assignment(t, sa + " " + op + " " + sb);
 }
+bool fmadd_pass(const Expr &a, const Expr &b,vector<Expr> &result) {
+    Type t = a.type();
+    internal_assert(b.type() == t);
 
+    if (!(t.is_float() && t.bits() == 32 && t.lanes() >= 4)) {
+        return false;
+    }
+    if(b.node_type()==IRNodeType::Mul)
+    {
+        const Mul* mul = b.as<Mul>();
+        std::vector<Expr> args = {mul->a, mul->b, a};
+        result.swap(args);
+        return true;
+    }
+    return false;
+}
 void CodeGen_C::visit(const Add *op) {
+    //X86
+    if(target.arch ==Target::X86 && op->type.bits() == 32 && op->type.lanes()==8)
+    {
+        vector<Expr> matches;
+        if(fmadd_pass(op->a,op->b,matches))
+        {
+            string sa = print_expr(matches[0]);
+            string sb = print_expr(matches[1]);
+            string sc = print_expr(matches[2]);
+            print_assignment(op->type, "_mm256_fmadd_ps(" + sa + ", " + sb + "," + sc +")");
+            return;
+        }
+        string sa = print_expr(op->a);
+        string sb = print_expr(op->b);
+        print_assignment(op->type, "_mm256_add_ps(" + sa + ", " + sb+")");
+        return;
+    }
+    //arm64
+    if(print_type(op->type)=="float32x4_t " )
+    {
+        string sa = print_expr(op->a);
+        string sb = print_expr(op->b);
+        print_assignment(op->type, "vaddq_f32(" + sa + ", " + sb+")");
+        return;
+    }
+    else{
     visit_binop(op->type, op->a, op->b, "+");
+    }
 }
 
 void CodeGen_C::visit(const Sub *op) {
@@ -1989,7 +2040,8 @@ void CodeGen_C::visit(const FloatImm *op) {
         if (op->type.bits() == 64) {
             oss << "(double) ";
         }
-        oss << "float_from_bits(" << u.as_uint << " /* " << u.as_float << " */)";
+        oss << u.as_float;
+        //oss << "float_from_bits(" << u.as_uint << " /* " << u.as_float << " */)";
         print_assignment(op->type, oss.str());
     }
 }
@@ -2346,6 +2398,16 @@ string CodeGen_C::print_extern_call(const Call *op) {
 }
 
 void CodeGen_C::visit(const Load *op) {
+
+    string load_intrinsic;
+    if(target.arch==Target::X86)
+    {
+        load_intrinsic="_mm256_loadu_ps";
+    }
+    else if(target.arch==Target::ARM && target.bits == 64)
+    {
+        load_intrinsic="vld1q_f32";
+    }
     // TODO: We could replicate the logic in the llvm codegen which decides whether
     // the vector access can be aligned. Doing so would also require introducing
     // aligned type equivalents for all the vector types.
@@ -2359,13 +2421,30 @@ void CodeGen_C::visit(const Load *op) {
     if (dense_ramp_base.defined() && is_const_one(op->predicate)) {
         internal_assert(t.is_vector());
         string id_ramp_base = print_expr(dense_ramp_base);
-        rhs << print_type(t) + "_ops::load(" << name << ", " << id_ramp_base << ")";
+        if(target.arch==Target::X86)
+        {
+            rhs <<  load_intrinsic << "(" << name << "+ " << id_ramp_base << ")";
+        }
+        else
+        {
+            rhs << print_type(t) + "_ops::load(" << name << ", " << id_ramp_base << ")";
+        }
+
+
     } else if (op->index.type().is_vector()) {
         // If index is a vector, gather vector elements.
         internal_assert(t.is_vector());
         string id_index = print_expr(op->index);
         if (is_const_one(op->predicate)) {
-            rhs << print_type(t) + "_ops::load_gather(" << name << ", " << id_index << ")";
+            if((target.arch==Target::X86) ||(target.arch==Target::ARM )){
+                const Ramp *ramp_index = op->index.as<Ramp>();
+                string id_ramp_base = print_expr(ramp_index->base);
+                rhs <<  load_intrinsic << "(" << name << "+ " << id_ramp_base << ")";
+            }
+            else
+            {
+                rhs << print_type(t) + "_ops::load_gather(" << name << ", " << id_index << ")";
+            }
         } else {
             string id_predicate = print_expr(op->predicate);
             rhs << print_type(t) + "_ops::load_predicated(" << name << ", " << id_index << ", " << id_predicate << ")";
@@ -2388,6 +2467,15 @@ void CodeGen_C::visit(const Load *op) {
 }
 
 void CodeGen_C::visit(const Store *op) {
+    string store_intrinsic;
+    if(target.arch==Target::X86)
+    {
+        store_intrinsic="_mm256_storeu_ps";
+    }
+    else if(target.arch==Target::ARM && target.bits == 64)
+    {
+        store_intrinsic="vst1q_f32";
+    }
     Type t = op->value.type();
 
     if (inside_atomic_mutex_node) {
@@ -2417,13 +2505,31 @@ void CodeGen_C::visit(const Store *op) {
     if (dense_ramp_base.defined() && is_const_one(op->predicate)) {
         internal_assert(op->value.type().is_vector());
         string id_ramp_base = print_expr(dense_ramp_base);
-        stream << get_indent() << print_type(t) + "_ops::store(" << id_value << ", " << name << ", " << id_ramp_base << ");\n";
+        if(target.arch==Target::X86)
+        {
+            stream << get_indent() << store_intrinsic<< "(" << name << " + " << id_ramp_base << ", "<< id_value<<");\n";
+        }
+        else
+        {
+            stream << get_indent() << print_type(t) + "_ops::store(" << id_value << ", " << name << ", " << id_ramp_base << ");\n";
+        }
+    
     } else if (op->index.type().is_vector()) {
         // If index is a vector, scatter vector elements.
         internal_assert(t.is_vector());
         string id_index = print_expr(op->index);
         if (is_const_one(op->predicate)) {
-            stream << get_indent() << print_type(t) + "_ops::store_scatter(" << id_value << ", " << name << ", " << id_index << ");\n";
+            if((target.arch==Target::X86) ||(target.arch==Target::ARM))
+            {
+                const Ramp *ramp_index = op->index.as<Ramp>();
+                string id_ramp_base = print_expr(ramp_index->base);
+                stream << get_indent() << store_intrinsic<< "(" << name << " + " << id_ramp_base << ", "<< id_value<<");\n";
+            }
+            else
+            {
+                stream << get_indent() << print_type(t) + "_ops::store_scatter(" << id_value << ", " << name << ", " << id_index << ");\n";
+            }
+
         } else {
             string id_predicate = print_expr(op->predicate);
             stream << get_indent() << print_type(t) + "_ops::store_predicated(" << id_value << ", " << name << ", " << id_index << ", " << id_predicate << ");\n";
@@ -2670,7 +2776,14 @@ void CodeGen_C::visit(const Ramp *op) {
     Type vector_type = op->type.with_lanes(op->lanes);
     string id_base = print_expr(op->base);
     string id_stride = print_expr(op->stride);
-    print_assignment(vector_type, print_type(vector_type) + "_ops::ramp(" + id_base + ", " + id_stride + ")");
+    //temp remove ramp
+    if((target.arch==Target::X86) ||(target.arch==Target::ARM )){
+    }
+    else
+    {
+        print_assignment(vector_type, print_type(vector_type) + "_ops::ramp(" + id_base + ", " + id_stride + ")");
+    }
+
 }
 
 void CodeGen_C::visit(const Broadcast *op) {
@@ -2678,7 +2791,18 @@ void CodeGen_C::visit(const Broadcast *op) {
     string id_value = print_expr(op->value);
     string rhs;
     if (op->lanes > 1) {
-        rhs = print_type(vector_type) + "_ops::broadcast(" + id_value + ")";
+        if((target.arch==Target::X86)&& (print_type(op->type)=="__m256 " ))
+        {
+            rhs = "_mm256_set1_ps("+ id_value + ")";
+        }
+        else if(print_type(op->type)=="float32x4_t " )
+        {
+                rhs = "vdupq_n_f32("+ id_value + ")";
+        }
+        else
+        {
+            rhs = print_type(vector_type) + "_ops::broadcast(" + id_value + ")";
+        }
     } else {
         rhs = id_value;
     }
