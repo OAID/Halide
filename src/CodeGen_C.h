@@ -26,6 +26,8 @@ struct LoweredFunc;
  */
 class CodeGen_C : public IRPrinter {
 public:
+    /** Create an instance of CodeGen_C suitable for the target. */
+    static std::unique_ptr<CodeGen_C> new_for_target(const Target &target, std::ostream &dest);
     enum OutputKind {
         CHeader,
         CPlusPlusHeader,

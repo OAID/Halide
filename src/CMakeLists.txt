@@ -184,6 +184,9 @@ set(SOURCE_FILES
     Closure.cpp
     CodeGen_ARM.cpp
     CodeGen_C.cpp
+    CodeGen_C_X86.cpp
+    CodeGen_C_ARM.cpp
+    CodeGen_C_RISCV.cpp
     CodeGen_D3D12Compute_Dev.cpp
     CodeGen_GPU_Dev.cpp
     CodeGen_Hexagon.cpp
@@ -404,6 +407,8 @@ target_compile_options(
         Halide
         PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall>
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-O0>
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-g>
 
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wcast-qual>
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wignored-qualifiers>

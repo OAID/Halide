@@ -24,6 +24,12 @@ std::unique_ptr<CodeGen_Posix> new_CodeGen_RISCV(const Target &target);
 std::unique_ptr<CodeGen_Posix> new_CodeGen_X86(const Target &target);
 std::unique_ptr<CodeGen_Posix> new_CodeGen_WebAssembly(const Target &target);
 
+class CodeGen_C;
+
+std::unique_ptr<CodeGen_C> new_CodeGen_C_X86(const Target &target,std::ostream &dest);
+std::unique_ptr<CodeGen_C> new_CodeGen_C_ARM(const Target &target,std::ostream &dest);
+std::unique_ptr<CodeGen_C> new_CodeGen_C_RISCV(const Target &target,std::ostream &dest);
+
 }  // namespace Internal
 }  // namespace Halide
 
